@@ -4,7 +4,6 @@
  * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
  */
 'use strict';
-
 import * as childProcess from 'child_process';
 import * as fs from 'fs';
 import * as net from 'net';
@@ -47,7 +46,8 @@ export interface LaunchedChrome {
   pid: number;
   port: number;
   process: ChildProcess;
-  kill: () => Promise<{}>;
+	kill: () => Promise<{}>;
+	getChromeWebsocketUrl: () => Promise<{}>;
 }
 
 export interface ModuleOverrides {
@@ -85,9 +85,35 @@ async function launch(opts: Options = {}): Promise<LaunchedChrome> {
       process.removeListener(_SIGINT, sigintListener);
     }
     return instance.kill();
-  };
+	};
+	
+	const getChromeWebsocketUrl = () => {
+		return new Promise(async (resolve, reject) => {
+			const promiseDelay = (delay: number) => new Promise(resolve => setTimeout(resolve, delay))
+			const timeout = 10 * 1000 // in ms
+			let promiseResolved = false
+			
+			setTimeout(() => {
+				if (!promiseResolved) {
+					promiseResolved = true
+					reject('Failed to get chrome websocket url - timeout')
+				}
+			}, timeout)
 
-  return {pid: instance.pid!, port: instance.port!, kill, process: instance.chrome!};
+			
+			while (!promiseResolved) {
+				if (instance.chromeWebsocketUrl) {
+					promiseResolved = true
+					resolve(instance.chromeWebsocketUrl)
+					break
+				}
+
+				await promiseDelay(100)
+			}
+		})
+	}
+
+  return {pid: instance.pid!, port: instance.port!, kill, process: instance.chrome!, getChromeWebsocketUrl};
 }
 
 class Launcher {
@@ -95,7 +121,7 @@ class Launcher {
   private pidFile: string;
   private startingUrl: string;
   private outFile?: number;
-  private errFile?: number;
+	private errFile?: number;
   private chromePath?: string;
   private enableExtensions?: boolean;
   private chromeFlags: string[];
@@ -107,7 +133,8 @@ class Launcher {
   private spawn: typeof childProcess.spawn;
   private useDefaultProfile: boolean;
   private envVars: {[key: string]: string|undefined};
-
+	
+	chromeWebsocketUrl?: string;
   chrome?: childProcess.ChildProcess;
   userDataDir?: string;
   port?: number;
@@ -178,8 +205,9 @@ class Launcher {
     }
 
     this.userDataDir = this.userDataDir || this.makeTmpDir();
-    this.outFile = this.fs.openSync(`${this.userDataDir}/chrome-out.log`, 'a');
-    this.errFile = this.fs.openSync(`${this.userDataDir}/chrome-err.log`, 'a');
+    this.outFile = this.fs.openSync(`${this.userDataDir}/chrome-out.log`, 'a+');
+		this.errFile = this.fs.openSync(`${this.userDataDir}/chrome-err.log`, 'a+');
+		this.chromeWebsocketUrl = ''
 
     // fix for Node4
     // you can't pass a fd to fs.writeFileSync
@@ -220,6 +248,51 @@ class Launcher {
     return Promise.resolve();
   }
 
+	promiseDelay(delay: number) {
+		return new Promise(resolve => setTimeout(resolve, delay))
+	}
+
+	_listenForWebsocketUrl() {
+		return new Promise(async (resolve, reject) => {
+			const logPath = `${this.userDataDir}/chrome-err.log`
+			const timeout = 10 * 1000 // in ms
+			let promiseResolved = false
+			
+			setTimeout(() => {
+				if (!promiseResolved) {
+					promiseResolved = true
+					reject('Failed to FIND chrome websocket url - timeout')
+				}
+			}, timeout)
+
+			while (!promiseResolved) {
+				// @ts-ignore
+				fs.readFile(logPath, 'utf8', async (err: Object, data: String) => {
+					if (err) {
+						console.log(`[ChromeLauncher] Failed to readfile`, err)
+						return
+					}
+
+					const lines = data.split('\n')
+					
+					for (let index in lines) {
+						const line = lines[index]
+
+						if (line.startsWith('DevTools listening')) {
+							// @ts-ignore
+							this.chromeWebsocketUrl = line.match('(ws://.+)')[1].trim();
+
+							promiseResolved = true
+							resolve(this.chromeWebsocketUrl)
+						}
+					}
+				})	
+
+				await this.promiseDelay(100)
+			}
+		})
+	}
+
   private async spawnProcess(execPath: string) {
     const spawnPromise = (async () => {
       if (this.chrome) {
@@ -238,11 +311,12 @@ class Launcher {
 
       log.verbose(
           'ChromeLauncher', `Launching with command:\n"${execPath}" ${this.flags.join(' ')}`);
+			this._listenForWebsocketUrl()
       const chrome = this.spawn(
           execPath, this.flags,
-          {detached: true, stdio: ['ignore', this.outFile, this.errFile], env: this.envVars});
-      this.chrome = chrome;
+					{detached: true, stdio: ['ignore', this.outFile, this.errFile], env: this.envVars});
 
+      this.chrome = chrome;
       this.fs.writeFileSync(this.pidFile, chrome.pid.toString());
 
       log.verbose('ChromeLauncher', `Chrome running with pid ${chrome.pid} on port ${this.port}.`);
