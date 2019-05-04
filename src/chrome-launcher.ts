@@ -325,6 +325,8 @@ class Launcher {
 			this.chrome.on('close', () => {
 				// silence errors
 				this.kill().catch(() => {})
+				// clean tmp
+				this.destroyTmp()
 			})
 
       return chrome.pid;
