@@ -322,7 +322,10 @@ class Launcher {
 			log.verbose('ChromeLauncher', `Chrome running with pid ${chrome.pid} on port ${this.port}.`);
 			
 			// clean tmp when Chrome is closed
-			this.chrome.on('close', () => this.kill())
+			this.chrome.on('close', () => {
+				// silence errors
+				this.kill().catch(() => {})
+			})
 
       return chrome.pid;
     })();
