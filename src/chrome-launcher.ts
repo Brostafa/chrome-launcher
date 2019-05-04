@@ -319,7 +319,11 @@ class Launcher {
       this.chrome = chrome;
       this.fs.writeFileSync(this.pidFile, chrome.pid.toString());
 
-      log.verbose('ChromeLauncher', `Chrome running with pid ${chrome.pid} on port ${this.port}.`);
+			log.verbose('ChromeLauncher', `Chrome running with pid ${chrome.pid} on port ${this.port}.`);
+			
+			// clean tmp when Chrome is closed
+			this.chrome.on('close', () => this.kill())
+
       return chrome.pid;
     })();
 
